@@ -1476,6 +1476,299 @@ function setupThemeToggle() {
   }
 }
 
+/* ================= LOCATION SEARCH (Analyze — Step 1) =================
+   Autocomplete place search that queries the app's own /api/search-location
+   endpoint (Photon / OpenStreetMap under the hood, built for type-ahead so
+   partial words match). Selecting a result fills the wizard's lat/lon (and
+   village/district/state when the geocoder returns them). Includes debounce,
+   in-memory result caching, localStorage history, keyboard navigation, match
+   highlighting and graceful error/retry.
+   Purely additive — the manual lat/lon inputs and 📍 Auto-fill still work. */
+const LOC_HISTORY_KEY = 'km-locsearch-history';
+const LOC_HISTORY_MAX = 6;
+const LOC_DEBOUNCE_MS = 350;
+const LOC_MIN_CHARS = 3;
+
+function setupLocationSearch() {
+  const input = document.getElementById('locSearchInput');
+  const box = document.getElementById('locSearch');
+  if (!input || !box) return; // markup absent — nothing to wire
+
+  const list = document.getElementById('locSuggestions');
+  const spinner = document.getElementById('locSpinner');
+  const clearBtn = document.getElementById('locClearInput');
+  const statusEl = document.getElementById('locStatus');
+  const historyWrap = document.getElementById('locHistory');
+  const historyChips = document.getElementById('locHistoryChips');
+  const historyClear = document.getElementById('locHistoryClear');
+
+  const cache = new Map();      // normalized query -> results array (faster repeat lookups)
+  let results = [];             // currently rendered suggestions
+  let activeIndex = -1;         // highlighted suggestion for keyboard nav
+  let debounceTimer = null;
+  let controller = null;        // aborts the in-flight request when a newer one starts
+  let lastQuery = '';           // remembered so the retry button can replay it
+
+  /* ---------- localStorage history (stored: [{label, lat, lon}]) ---------- */
+  function readHistory() {
+    try {
+      const raw = localStorage.getItem(LOC_HISTORY_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch (_) { return []; }
+  }
+  function writeHistory(arr) {
+    try { localStorage.setItem(LOC_HISTORY_KEY, JSON.stringify(arr)); } catch (_) { /* quota/denied — ignore */ }
+  }
+  function addToHistory(entry) {
+    const label = entry.label;
+    let arr = readHistory().filter(h => h.label !== label);
+    arr.unshift({ label, lat: entry.lat, lon: entry.lon });
+    if (arr.length > LOC_HISTORY_MAX) arr = arr.slice(0, LOC_HISTORY_MAX);
+    writeHistory(arr);
+    renderHistory();
+  }
+  function renderHistory() {
+    const arr = readHistory();
+    if (!arr.length) { historyWrap.hidden = true; historyChips.innerHTML = ''; return; }
+    historyChips.innerHTML = arr.map((h, i) =>
+      `<button type="button" class="loc-history-chip" data-hist="${i}" title="${escapeHtml(h.label)}">${escapeHtml(shortLabel(h.label))}</button>`
+    ).join('');
+    historyWrap.hidden = false;
+  }
+
+  /* ---------- helpers ---------- */
+  // The backend returns flat rows {display_name, lat, lon, village, district,
+  // state}; reshape into the { display_name, lat, lon, address:{...} } form the
+  // rest of the widget uses.
+  function normalizePlace(row) {
+    return {
+      display_name: row.display_name,
+      lat: row.lat != null ? String(row.lat) : null,
+      lon: row.lon != null ? String(row.lon) : null,
+      address: {
+        village: row.village || '',
+        district: row.district || '',
+        state: row.state || ''
+      }
+    };
+  }
+
+  function shortLabel(name) {
+    // first two comma-separated parts keep chips compact
+    return name.split(',').slice(0, 2).join(',').trim();
+  }
+  function showSpinner(on) { spinner.hidden = !on; }
+  function setStatus(msg, isError) {
+    if (!msg) { statusEl.hidden = true; statusEl.innerHTML = ''; return; }
+    statusEl.classList.toggle('is-error', !!isError);
+    statusEl.textContent = msg;
+    statusEl.hidden = false;
+  }
+  function setStatusRetry(msg) {
+    statusEl.classList.add('is-error');
+    statusEl.innerHTML = `<span>${escapeHtml(msg)}</span>`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'loc-retry';
+    btn.textContent = '↻ Retry';
+    btn.addEventListener('click', () => { if (lastQuery) runSearch(lastQuery, true); });
+    statusEl.appendChild(btn);
+    statusEl.hidden = false;
+  }
+  function highlight(text, query) {
+    const safe = escapeHtml(text);
+    const q = query.trim();
+    if (!q) return safe;
+    // escape regex metacharacters in the user query before building the matcher
+    const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+    return safe.replace(re, '<mark>$1</mark>');
+  }
+
+  /* ---------- suggestions dropdown ---------- */
+  function closeSuggestions() {
+    list.hidden = true;
+    list.innerHTML = '';
+    results = [];
+    activeIndex = -1;
+    input.setAttribute('aria-expanded', 'false');
+  }
+  function renderSuggestions(items, query) {
+    results = items;
+    activeIndex = -1;
+    if (!items.length) { closeSuggestions(); return; }
+    list.innerHTML = items.map((it, i) => {
+      const main = it.display_name.split(',')[0];
+      const rest = it.display_name.split(',').slice(1).join(',').trim();
+      return `<li class="loc-suggestion" role="option" id="loc-opt-${i}" data-idx="${i}">` +
+        `${highlight(main, query)}` +
+        (rest ? `<small>${highlight(rest, query)}</small>` : '') +
+        `</li>`;
+    }).join('');
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+  }
+  function setActive(idx) {
+    const opts = list.querySelectorAll('.loc-suggestion');
+    if (!opts.length) return;
+    if (idx < 0) idx = opts.length - 1;
+    if (idx >= opts.length) idx = 0;
+    opts.forEach(o => o.classList.remove('active'));
+    activeIndex = idx;
+    opts[idx].classList.add('active');
+    opts[idx].scrollIntoView({ block: 'nearest' });
+    input.setAttribute('aria-activedescendant', `loc-opt-${idx}`);
+  }
+
+  /* ---------- apply a chosen place to the wizard form ---------- */
+  function pick(addr, lat, lon) {
+    const form = document.getElementById('analyzeForm');
+    if (!form) return;
+    const setVal = (name, val) => {
+      const el = form.querySelector(`[name=${name}]`);
+      if (el && val != null && val !== '') el.value = val;
+    };
+    setVal('lat', Number(lat).toFixed(4));
+    setVal('lon', Number(lon).toFixed(4));
+    if (addr) {
+      setVal('village', addr.village || '');
+      setVal('district', addr.district || '');
+      setVal('state', addr.state || '');
+    }
+  }
+  function choose(item) {
+    pick(item.address, item.lat, item.lon);
+    input.value = item.display_name;
+    clearBtn.hidden = false;
+    addToHistory({ label: item.display_name, lat: item.lat, lon: item.lon });
+    setStatus(`✅ Location set: ${shortLabel(item.display_name)} (${Number(item.lat).toFixed(4)}, ${Number(item.lon).toFixed(4)})`, false);
+    closeSuggestions();
+  }
+
+  /* ---------- geocode query (via the app's /api/search-location) ---------- */
+  async function runSearch(query, force) {
+    const key = query.trim().toLowerCase();
+    lastQuery = query;
+
+    if (cache.has(key)) {           // instant repeat lookup from cache
+      showSpinner(false);
+      setStatus('', false);
+      const cached = cache.get(key);
+      if (!cached.length) setStatus('Koi location nahi mili. Doosra naam try karein.', false);
+      renderSuggestions(cached, query);
+      return;
+    }
+
+    if (controller) controller.abort();
+    controller = new AbortController();
+    showSpinner(true);
+    setStatus('', false);
+    try {
+      const url = '/api/search-location?q=' + encodeURIComponent(query);
+      const res = await fetch(url, { signal: controller.signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const data = (json.results || [])
+        .map(normalizePlace)
+        .filter(p => p.display_name && p.lat != null && p.lon != null);
+      cache.set(key, data);
+      showSpinner(false);
+      if (!data.length) {
+        closeSuggestions();
+        setStatus('Koi location nahi mili. Doosra naam ya spelling try karein.', false);
+        return;
+      }
+      setStatus('', false);
+      renderSuggestions(data, query);
+    } catch (err) {
+      if (err && err.name === 'AbortError') return; // superseded by a newer query
+      showSpinner(false);
+      closeSuggestions();
+      setStatusRetry('Location search fail ho gayi (network issue).');
+    }
+  }
+
+  /* ---------- events ---------- */
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    clearBtn.hidden = !input.value;
+    clearTimeout(debounceTimer);
+    setStatus('', false);
+    if (q.length < LOC_MIN_CHARS) {
+      showSpinner(false);
+      if (controller) controller.abort();
+      closeSuggestions();
+      if (!q) renderHistory();
+      return;
+    }
+    historyWrap.hidden = true;
+    debounceTimer = setTimeout(() => runSearch(q, false), LOC_DEBOUNCE_MS);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    const open = !list.hidden && results.length;
+    if (e.key === 'ArrowDown') {
+      if (open) { e.preventDefault(); setActive(activeIndex + 1); }
+    } else if (e.key === 'ArrowUp') {
+      if (open) { e.preventDefault(); setActive(activeIndex - 1); }
+    } else if (e.key === 'Enter') {
+      if (open) {
+        e.preventDefault();
+        choose(results[activeIndex >= 0 ? activeIndex : 0]);
+      }
+    } else if (e.key === 'Escape') {
+      closeSuggestions();
+    }
+  });
+
+  input.addEventListener('focus', () => {
+    if (input.value.trim().length < LOC_MIN_CHARS) renderHistory();
+  });
+
+  list.addEventListener('mousedown', (e) => {
+    // mousedown (not click) so the input's blur doesn't close the list first
+    const li = e.target.closest('.loc-suggestion');
+    if (!li) return;
+    e.preventDefault();
+    const idx = parseInt(li.dataset.idx, 10);
+    if (results[idx]) choose(results[idx]);
+  });
+
+  clearBtn.addEventListener('click', () => {
+    input.value = '';
+    clearBtn.hidden = true;
+    setStatus('', false);
+    closeSuggestions();
+    renderHistory();
+    input.focus();
+  });
+
+  historyChips.addEventListener('click', (e) => {
+    const chip = e.target.closest('.loc-history-chip');
+    if (!chip) return;
+    const arr = readHistory();
+    const item = arr[parseInt(chip.dataset.hist, 10)];
+    if (!item) return;
+    pick(null, item.lat, item.lon);
+    input.value = item.label;
+    clearBtn.hidden = false;
+    historyWrap.hidden = true;
+    setStatus(`✅ Location set: ${shortLabel(item.label)} (${Number(item.lat).toFixed(4)}, ${Number(item.lon).toFixed(4)})`, false);
+  });
+
+  historyClear.addEventListener('click', () => {
+    writeHistory([]);
+    renderHistory();
+  });
+
+  // close the dropdown when clicking anywhere outside the widget
+  document.addEventListener('click', (e) => {
+    if (!box.contains(e.target)) closeSuggestions();
+  });
+
+  renderHistory();
+}
+
 /* ================= INIT ================= */
 document.addEventListener("DOMContentLoaded", () => {
   showView("map");
@@ -1487,6 +1780,8 @@ document.addEventListener("DOMContentLoaded", () => {
   loadFields();
 
   setupFieldSearchFilter();
+
+  setupLocationSearch();
 
   goToStep(1);
 

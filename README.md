@@ -35,7 +35,7 @@ The platform helps farmers monitor crop health, detect moisture stress, and rece
 - 📅 7-Day Weather Forecast
 - 📄 PDF Report Generation
 - 📤 CSV Data Export
-- 🔍 Location Search
+- 🔍 Location Search — autocomplete with recent-search history & keyboard navigation
 - 📊 NDVI, NDWI & MSI Visualization
 - 📱 Responsive UI
 - 🌗 Dark / Light Theme Toggle — remembers your choice and follows your system preference
@@ -148,9 +148,62 @@ http://localhost:5001
 | `/api/forecast` | GET | 7-day weather forecast (Open-Meteo) |
 | `/api/history` | GET | Analysis history |
 | `/api/dashboard` | GET | Dashboard statistics |
+| `/api/search-location?q=<query>` | GET | Location autocomplete — `<query>` is the place name to search (Photon/OpenStreetMap, India-focused) |
 | `/api/model-metrics` | GET | AI model performance |
 | `/api/export/csv` | GET | Download dashboard field data as CSV |
 | `/api/health` | GET | Health check |
+
+---
+
+# 🔍 Location Search
+
+The **Analyze → Step 1 (Location)** panel includes a smart location search so
+you can find a farm by name instead of typing raw coordinates.
+
+- **Autocomplete suggestions** as you type (from 3 characters), matching even
+  partial words — e.g. `luckno` → *Lucknow*.
+- **Auto-fills** Latitude/Longitude and Village/District/State on selection.
+- **Recent search history** (kept in the browser's Local Storage) with a
+  one-click **Clear** — no duplicate entries.
+- **Keyboard navigation** — `↓`/`↑` to move, `Enter` to select, `Esc` to close.
+- **Match highlighting**, a **loading indicator**, and graceful **error
+  handling** with a **Retry** button on network failure.
+- Debounced input + in-memory caching for **faster, lighter** lookups.
+
+Suggestions are served by the app's own `GET /api/search-location?q=<query>`
+endpoint, which proxies [Photon](https://photon.komoot.io) — an
+OpenStreetMap-based geocoder designed for type-ahead search. Results are
+focused on India using a geographic bounding box. The endpoint always responds
+gracefully — an empty list with a note — if the upstream geocoder is
+unreachable. Manual latitude/longitude entry and the 📍 *Auto-fill Coordinates*
+(device geolocation) button continue to work as before.
+
+### Why Photon and not Nominatim?
+
+Both are **free, no-API-key geocoders built on the same OpenStreetMap data**,
+but they are built for different jobs, and the choice matters for a
+search-as-you-type box:
+
+| Aspect | Nominatim | **Photon (chosen)** |
+|---|---|---|
+| Designed for | Full-address & reverse geocoding | **Autocomplete / type-ahead** |
+| Partial words | ❌ needs complete words | ✅ matches prefixes (`luckno` → *Lucknow*) |
+| Typo tolerance | Minimal | Some built in |
+| Public-API policy | Discourages autocomplete use; ~1 req/sec | Meant for many small type-ahead requests |
+
+The deciding factor: Nominatim's `/search` only matches **complete words**, so
+typing `luckno` returns **nothing** — unusable for an autocomplete box (and
+Nominatim's own docs advise against using its public API this way). Photon was
+built specifically as the autocomplete companion to Nominatim and matches
+partial input instantly, which is exactly what this feature needs.
+
+> **Note:** Nominatim is still the better tool for one-shot *full-address*
+> geocoding and *reverse* geocoding (coordinates → address). Photon is chosen
+> here only because this is a live autocomplete experience. The India focus uses
+> a bounding box (Photon's free tier has no country-code filter), so it may
+> include small border areas of neighbouring countries. Both public instances
+> are free/shared and fine for this project; heavy production traffic would call
+> for a self-hosted or paid geocoder.
 
 ---
 

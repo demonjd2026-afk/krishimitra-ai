@@ -2027,3 +2027,219 @@ html.theme-transition *::after {
     transition: none !important;
   }
 }
+
+/* ================= LOCATION SEARCH (Analyze — Step 1) ================= */
+/* Autocomplete over OpenStreetMap Nominatim. Uses the same design tokens as
+   the rest of the app, so it themes correctly in both dark and light modes. */
+.loc-search {
+  position: relative;
+  margin: 4px 0 8px;
+}
+
+.loc-search-label {
+  display: block;
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.loc-search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: var(--muted);
+  transition: border-color .15s;
+}
+
+.loc-search-box:focus-within {
+  border-color: var(--green);
+}
+
+/* Override the global input styles for the inline search field. */
+.loc-search-box input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+  min-height: auto;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.loc-search-box input:focus {
+  border: none;
+}
+
+.loc-spinner {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--green);
+  animation: locSpin .6s linear infinite;
+}
+
+@keyframes locSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loc-clear-input {
+  flex: none;
+  width: auto;
+  min-height: auto;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.loc-clear-input:hover {
+  color: var(--text);
+}
+
+.loc-suggestions {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 4px;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 40;
+  background: var(--panel-solid);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .35);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.loc-suggestion {
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.loc-suggestion small {
+  display: block;
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-top: 2px;
+}
+
+.loc-suggestion mark {
+  background: transparent;
+  color: var(--green);
+  font-weight: 700;
+}
+
+.loc-suggestion:hover,
+.loc-suggestion.active {
+  background: var(--panel-2);
+}
+
+.loc-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.loc-status.is-error {
+  color: var(--red);
+}
+
+.loc-retry {
+  width: auto;
+  min-height: auto;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.loc-retry:hover {
+  border-color: var(--green);
+}
+
+.loc-history {
+  margin-top: 10px;
+}
+
+.loc-history-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.loc-history-clear {
+  width: auto;
+  min-height: auto;
+  background: transparent;
+  border: none;
+  color: var(--green);
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.loc-history-clear:hover {
+  text-decoration: underline;
+}
+
+.loc-history-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.loc-history-chip {
+  width: auto;
+  min-height: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color .15s;
+}
+
+.loc-history-chip:hover {
+  border-color: var(--line-strong);
+}
+
+/* Mobile-friendly: larger touch targets, contained dropdown height. */
+@media (max-width: 560px) {
+  .loc-suggestions {
+    max-height: 210px;
+  }
+
+  .loc-suggestion {
+    padding: 11px 10px;
+  }
+}

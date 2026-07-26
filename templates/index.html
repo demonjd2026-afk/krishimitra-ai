@@ -26,7 +26,7 @@
   <link
     href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap"
     rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='11') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='12') }}">
 </head>
 
 <body>
@@ -236,6 +236,31 @@
         <form id="analyzeForm">
           <!-- Step 1: Location -->
           <div class="wpanel" data-panel="1">
+            <!-- Location search: autocomplete via OpenStreetMap Nominatim -->
+            <div class="loc-search" id="locSearch">
+              <label class="loc-search-label" for="locSearchInput">📍 Location Search</label>
+              <div class="loc-search-box">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                  <path fill="currentColor"
+                    d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 5L20.49 19l-5-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z" />
+                </svg>
+                <input type="text" id="locSearchInput" autocomplete="off" role="combobox"
+                  aria-expanded="false" aria-autocomplete="list" aria-controls="locSuggestions"
+                  placeholder="Village, district ya place search karein…">
+                <span class="loc-spinner" id="locSpinner" hidden aria-hidden="true"></span>
+                <button type="button" class="loc-clear-input" id="locClearInput" hidden
+                  aria-label="Clear search">&times;</button>
+              </div>
+              <ul class="loc-suggestions" id="locSuggestions" role="listbox" hidden></ul>
+              <div class="loc-status" id="locStatus" role="status" aria-live="polite" hidden></div>
+              <div class="loc-history" id="locHistory" hidden>
+                <div class="loc-history-head">
+                  <span>Recent searches</span>
+                  <button type="button" class="loc-history-clear" id="locHistoryClear">Clear</button>
+                </div>
+                <div class="loc-history-chips" id="locHistoryChips"></div>
+              </div>
+            </div>
             <div class="row">
               <label>Village <input type="text" name="village" placeholder="Optional"></label>
               <label>District <input type="text" name="district" placeholder="Optional"></label>
@@ -395,7 +420,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-  <script src="{{ url_for('static', filename='script.js', v='13') }}"></script>
+  <script src="{{ url_for('static', filename='script.js', v='14') }}"></script>
 </body>
 
 </html>
