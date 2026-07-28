@@ -1,0 +1,7 @@
+# Development & CI tooling (not required to run the app).
+# Install with: pip install -r requirements-dev.txt
+flake8
+black
+isort
+coverage
+pytest

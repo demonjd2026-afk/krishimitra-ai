@@ -5,3 +5,10 @@ history.db
 .env
 .DS_Store
 .vscode/
+.idea/
+
+# Test & coverage artifacts
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/

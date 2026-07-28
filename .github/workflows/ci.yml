@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test & Lint (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Lint with flake8 (syntax & undefined names — blocking)
+        run: |
+          # Stop the build on real errors: syntax errors, undefined names, etc.
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Lint with flake8 (style report — non-blocking)
+        run: |
+          # Full style report, treated as advisory so existing code doesn't fail CI.
+          flake8 . --count --exit-zero --statistics
+
+      - name: Check formatting with black (advisory — diff only)
+        # `--diff` (without `--check`) prints what black would change and always
+        # exits 0, so drift is visible in the logs without failing the build or
+        # emitting a misleading "exit code 1" annotation.
+        run: black --diff .
+
+      - name: Check import order with isort (advisory — diff only)
+        # Same rationale as black above: report-only, never fails the job.
+        run: isort --diff .
+
+      - name: Run tests with coverage
+        run: |
+          coverage run -m pytest -q
+          coverage report -m
+          coverage xml
+
+      - name: Upload coverage artifact
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+          if-no-files-found: ignore

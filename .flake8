@@ -1,0 +1,13 @@
+[flake8]
+max-line-length = 120
+# E203 & W503 conflict with black's formatting; E501 is reported via the
+# non-blocking style pass so long lines don't fail CI.
+extend-ignore = E203, W503, E501
+exclude =
+    .git,
+    __pycache__,
+    venv,
+    .venv,
+    build,
+    dist,
+    .pytest_cache

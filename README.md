@@ -9,6 +9,7 @@ Built for **ISRO Bharatiya Antariksh Hackathon 2026** by **Team SpaceHack**
 ![Scikit Learn](https://img.shields.io/badge/Scikit--Learn-AI-orange)
 ![Leaflet](https://img.shields.io/badge/Leaflet-Maps-green)
 ![License](https://img.shields.io/badge/License-MIT-success)
+[![CI](https://github.com/SunnyAgrwl05/krishimitra-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/SunnyAgrwl05/krishimitra-ai/actions/workflows/ci.yml)
 
 ---
 
@@ -314,6 +315,34 @@ Thank you to everyone who has contributed! ❤️
 <p align="center">
   <img src="docs/dashboard-preview.png" width="100%" alt="Dashboard">
 </p>
+
+---
+
+# 🧪 Testing & Continuous Integration
+
+Every push and pull request to `main` is automatically validated by a
+[GitHub Actions CI pipeline](.github/workflows/ci.yml) that runs across
+Python 3.11, 3.12 and 3.13:
+
+- ✅ **Tests** — full `pytest` suite executed with coverage reporting
+- 🔍 **Linting** — `flake8` (build fails on syntax errors / undefined names; style issues are reported as advisory)
+- 🎨 **Formatting** — `black` and `isort` checks (advisory)
+- ⚡ **Caching** — pip dependencies cached for faster runs
+
+### Run the checks locally
+
+```bash
+# Install dev/CI tooling (in addition to requirements.txt)
+pip install -r requirements-dev.txt
+
+# Run the test suite with coverage
+coverage run -m pytest -q && coverage report -m
+
+# Lint & formatting checks
+flake8 .
+black --check .
+isort --check-only .
+```
 
 ---
 

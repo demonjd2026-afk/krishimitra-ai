@@ -1,0 +1,27 @@
+[tool.black]
+line-length = 100
+target-version = ["py311", "py312", "py313"]
+extend-exclude = '''
+/(
+    venv
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+skip = ["venv", ".venv", "build", "dist"]
+
+[tool.coverage.run]
+source = ["app", "model"]
+omit = ["tests/*", "venv/*", ".venv/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
