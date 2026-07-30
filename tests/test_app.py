@@ -161,3 +161,73 @@ def test_dashboard_endpoint(client):
     assert d["total_fields"] == 6
     assert "crop_distribution" in d
     assert "urgency_distribution" in d
+
+
+# ---------- /api/trend (data behind the Analytics charts) ----------
+
+TREND_POINT_KEYS = [
+    "date", "NDVI", "NDWI", "MSI", "VV_dB", "VH_dB", "VV_VH_ratio",
+    "predicted_stress", "urgency", "recommended_water_mm",
+    "crop_water_demand_mm_day",
+]
+
+
+def test_trend_endpoint_shape(client):
+    r = client.get("/api/trend?lat=26.85&lon=80.95&days=30")
+    assert r.status_code == 200
+    d = r.get_json()
+    assert d["range"]["days"] == 30
+    assert len(d["series"]) == d["range"]["points"] > 0
+    for key in TREND_POINT_KEYS:
+        assert key in d["series"][0], f"{key} missing from trend point"
+    assert d["summary"]["trend"] in ("improving", "declining", "stable")
+    assert -1 <= d["summary"]["avg_ndvi"] <= 1
+
+
+def test_trend_series_is_chronological(client):
+    d = client.get("/api/trend?lat=26.85&lon=80.95&days=14").get_json()
+    dates = [p["date"] for p in d["series"]]
+    assert dates == sorted(dates)
+    assert dates[-1] == date.today().isoformat(), "Last point should be today"
+
+
+def test_trend_missing_params(client):
+    assert client.get("/api/trend").status_code == 400
+    assert client.get("/api/trend?lat=26.85").status_code == 400
+    assert client.get("/api/trend?lat=26.85&lon=80.95&days=xyz").status_code == 400
+
+
+def test_trend_days_are_clamped(client):
+    """Out-of-range windows are clamped, and long ones are sub-sampled so the
+    response stays small enough to chart."""
+    small = client.get("/api/trend?lat=26.85&lon=80.95&days=1").get_json()
+    assert small["range"]["days"] == 7
+
+    big = client.get("/api/trend?lat=26.85&lon=80.95&days=999").get_json()
+    assert big["range"]["days"] == 180
+    assert big["range"]["step_days"] > 1
+    assert len(big["series"]) <= 50
+
+
+def test_trend_respects_crop_hint(client):
+    d = client.get("/api/trend?lat=26.85&lon=80.95&days=14&crop=Wheat").get_json()
+    assert all(p["crop"] == "Wheat" for p in d["series"])
+    assert d["field"]["crop_hint"] == "Wheat"
+
+
+def test_trend_ignores_unknown_crop(client):
+    d = client.get("/api/trend?lat=26.85&lon=80.95&days=7&crop=Banana").get_json()
+    assert d["field"]["crop_hint"] is None
+
+
+def test_trend_distributions_match_series(client):
+    d = client.get("/api/trend?lat=25.46&lon=85.53&days=30").get_json()
+    assert sum(d["summary"]["stress_distribution"].values()) == len(d["series"])
+    assert sum(d["summary"]["urgency_distribution"].values()) == len(d["series"])
+
+
+def test_trend_does_not_write_history(client):
+    """The charts endpoint is read-only — unlike /api/analyze it must not log."""
+    before = len(client.get("/api/history").get_json())
+    client.get("/api/trend?lat=24.9&lon=84.1&days=7")
+    assert len(client.get("/api/history").get_json()) == before

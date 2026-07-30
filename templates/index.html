@@ -13,8 +13,15 @@
         var theme = saved
           || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
         document.documentElement.setAttribute('data-theme', theme);
+        // Declare that this page handles BOTH schemes itself (active one
+        // first). Without it, Chrome's auto/forced dark mode repaints the CSS
+        // while leaving <canvas> (the charts) in the original colours, so the
+        // chart text ends up unreadable against the darkened cards.
+        document.documentElement.style.colorScheme =
+          theme === 'light' ? 'light dark' : 'dark light';
       } catch (e) {
         document.documentElement.setAttribute('data-theme', 'dark');
+        document.documentElement.style.colorScheme = 'dark light';
       }
     })();
   </script>
@@ -26,7 +33,7 @@
   <link
     href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap"
     rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='12') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css', v='13') }}">
 </head>
 
 <body>
@@ -74,6 +81,13 @@
           <path fill="currentColor" d="M4 6h16v2H4zm0 5h10v2H4zm0 5h16v2H4z" />
         </svg>
         Pipeline
+      </button>
+      <button class="nav-pill" id="tab-analytics" role="tab" aria-selected="false">
+        <svg viewBox="0 0 24 24" width="16" height="16">
+          <path fill="currentColor"
+            d="M3.5 18.5l6-6 4 4L22 7.92 20.59 6.5l-7.09 8.09-4-4L2 17.5z" />
+        </svg>
+        Analytics
       </button>
       <button class="nav-pill" id="tab-weather" role="tab" aria-selected="false">
         <svg viewBox="0 0 24 24" width="16" height="16">
@@ -364,6 +378,139 @@
       </div>
     </section>
 
+    <!-- ANALYTICS VIEW (interactive Chart.js charts) -->
+    <section class="analyze-view" id="view-analytics" style="display:none">
+      <div class="analyze-card analytics-card glass">
+        <h2>📊 Interactive Analytics</h2>
+        <p class="muted">NDVI, NDWI, MSI, SAR aur irrigation demand ka trend — kisi bhi field ke liye.
+          Chart par hover karein exact values dekhne ke liye, aur download icon se PNG save karein.</p>
+
+        <form id="analyticsForm" class="analytics-form">
+          <label>Latitude <input type="number" step="0.0001" name="lat" id="anLat" value="26.85" required></label>
+          <label>Longitude <input type="number" step="0.0001" name="lon" id="anLon" value="80.95" required></label>
+          <label>Crop
+            <select name="crop" id="anCrop">
+              <option value="">Auto-detect</option>
+              <option>Wheat</option>
+              <option>Rice</option>
+              <option>Maize</option>
+              <option>Pulses</option>
+              <option>Sugarcane</option>
+            </select>
+          </label>
+          <label>Range
+            <select name="days" id="anRange">
+              <option value="7">Last 7 days</option>
+              <option value="14">Last 14 days</option>
+              <option value="30" selected>Last 30 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="180">Last 180 days</option>
+            </select>
+          </label>
+          <button type="button" class="btn-ghost" id="anUseFieldBtn">📍 Selected Field</button>
+          <button type="submit" class="btn-primary">Update Charts</button>
+        </form>
+
+        <div class="analytics-summary" id="analyticsSummary"></div>
+        <div class="analytics-status" id="analyticsStatus" role="status" aria-live="polite" hidden></div>
+
+        <div class="chart-grid" id="chartGrid">
+          <figure class="chart-card">
+            <figcaption class="chart-head">
+              <span class="chart-title">🌱 NDVI Trend</span>
+              <button type="button" class="chart-dl" data-chart="ndvi" title="Download as PNG"
+                aria-label="Download NDVI trend chart as PNG">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+                </svg>
+              </button>
+            </figcaption>
+            <div class="chart-box"><canvas id="chartNdvi"></canvas></div>
+          </figure>
+
+          <figure class="chart-card">
+            <figcaption class="chart-head">
+              <span class="chart-title">💧 NDWI Trend</span>
+              <button type="button" class="chart-dl" data-chart="ndwi" title="Download as PNG"
+                aria-label="Download NDWI trend chart as PNG">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+                </svg>
+              </button>
+            </figcaption>
+            <div class="chart-box"><canvas id="chartNdwi"></canvas></div>
+          </figure>
+
+          <figure class="chart-card">
+            <figcaption class="chart-head">
+              <span class="chart-title">🔥 MSI (Moisture Stress)</span>
+              <button type="button" class="chart-dl" data-chart="msi" title="Download as PNG"
+                aria-label="Download MSI chart as PNG">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+                </svg>
+              </button>
+            </figcaption>
+            <div class="chart-box"><canvas id="chartMsi"></canvas></div>
+          </figure>
+
+          <figure class="chart-card">
+            <figcaption class="chart-head">
+              <span class="chart-title">📡 SAR Backscatter (VV / VH)</span>
+              <button type="button" class="chart-dl" data-chart="sar" title="Download as PNG"
+                aria-label="Download SAR backscatter chart as PNG">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+                </svg>
+              </button>
+            </figcaption>
+            <div class="chart-box"><canvas id="chartSar"></canvas></div>
+          </figure>
+
+          <figure class="chart-card">
+            <figcaption class="chart-head">
+              <span class="chart-title">🚿 Irrigation Trend</span>
+              <button type="button" class="chart-dl" data-chart="irrigation" title="Download as PNG"
+                aria-label="Download irrigation trend chart as PNG">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+                </svg>
+              </button>
+            </figcaption>
+            <div class="chart-box"><canvas id="chartIrrigation"></canvas></div>
+          </figure>
+
+          <figure class="chart-card">
+            <figcaption class="chart-head">
+              <span class="chart-title">🩺 Crop Health Summary</span>
+              <button type="button" class="chart-dl" data-chart="health" title="Download as PNG"
+                aria-label="Download crop health summary chart as PNG">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+                </svg>
+              </button>
+            </figcaption>
+            <div class="chart-box"><canvas id="chartHealth"></canvas></div>
+          </figure>
+
+          <figure class="chart-card chart-card-wide">
+            <figcaption class="chart-head">
+              <span class="chart-title">🌾 Dashboard Fields — NDVI Comparison</span>
+              <button type="button" class="chart-dl" data-chart="compare" title="Download as PNG"
+                aria-label="Download field comparison chart as PNG">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                  <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+                </svg>
+              </button>
+            </figcaption>
+            <div class="chart-box"><canvas id="chartCompare"></canvas></div>
+          </figure>
+        </div>
+
+        <p class="chart-source muted" id="analyticsSource"></p>
+      </div>
+    </section>
+
     <!-- WEATHER FORECAST VIEW -->
     <section class="analyze-view" id="view-weather" style="display:none">
       <div class="analyze-card weather-card glass">
@@ -420,7 +567,8 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-  <script src="{{ url_for('static', filename='script.js', v='14') }}"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.0/chart.umd.min.js"></script>
+  <script src="{{ url_for('static', filename='script.js', v='17') }}"></script>
 </body>
 
 </html>

@@ -13,7 +13,7 @@ import sys
 import io
 import csv
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from flask import Flask, jsonify, request, render_template, Response
 
@@ -31,6 +31,13 @@ from concurrent.futures import ThreadPoolExecutor
 BASE = os.path.dirname(__file__)
 MODEL_DIR = os.path.join(BASE, "model")
 FEATURES = ["NDVI", "NDWI", "MSI", "VV_dB", "VH_dB", "VV_VH_ratio", "growth_fraction"]
+
+# /api/trend: how many days of history a caller may ask for, and the maximum
+# number of points we ever return (longer windows are sub-sampled, so a 180-day
+# request stays as cheap to compute and as readable on a chart as a 30-day one).
+TREND_MIN_DAYS = 7
+TREND_MAX_DAYS = 180
+TREND_MAX_POINTS = 45
 
 app = Flask(__name__)
 
@@ -273,6 +280,124 @@ def api_search_location():
     if not query:
         return jsonify({"results": [], "note": "q query param required hai"}), 400
     return jsonify(search_location(query))
+
+
+def _trend_dates(days, step, end=None):
+    """Ascending list of dates covering the last `days` days (inclusive of today),
+    sampled every `step` days. The most recent day is always the last point."""
+    end = end or date.today()
+    offsets = list(range(days - 1, -1, -step))
+    if offsets[-1] != 0:
+        offsets.append(0)
+    return [end - timedelta(days=o) for o in offsets]
+
+
+@app.route("/api/trend")
+def api_trend():
+    """Time-series of vegetation indices, SAR backscatter and irrigation demand
+    for one field -- the data behind the Analytics charts.
+
+    Query params: lat, lon (required), crop (optional hint), days (7-180,
+    default 30). Runs the same ingestion -> features -> AI -> decision-engine
+    pipeline as /api/analyze, once per sampled date, with a single batched model
+    call. Read-only: nothing is written to the history DB."""
+    try:
+        lat = float(request.args.get("lat"))
+        lon = float(request.args.get("lon"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "lat aur lon query params (numbers) required hain"}), 400
+
+    try:
+        days = int(request.args.get("days", 30))
+    except ValueError:
+        return jsonify({"error": "days number hona chahiye"}), 400
+    days = max(TREND_MIN_DAYS, min(days, TREND_MAX_DAYS))
+
+    crop_hint = request.args.get("crop") or None
+    if crop_hint not in (None, *CROP_CALENDAR.keys()):
+        crop_hint = None
+
+    step = max(1, -(-days // TREND_MAX_POINTS))  # ceil division
+    dates = _trend_dates(days, step)
+
+    try:
+        records = [simulate_field(lat, lon, crop_hint=crop_hint, when=d) for d in dates]
+
+        crop_model, stress_model = get_models()
+        feats = pd.DataFrame([{
+            "NDVI": r["optical"]["NDVI"], "NDWI": r["optical"]["NDWI"], "MSI": r["optical"]["MSI"],
+            "VV_dB": r["sar"]["VV_dB"], "VH_dB": r["sar"]["VH_dB"],
+            "VV_VH_ratio": r["sar"]["VV_VH_ratio"], "growth_fraction": r["growth_fraction"],
+        } for r in records])[FEATURES]
+
+        # One batched predict for the whole window instead of N single-row calls.
+        stress_preds = stress_model.predict(feats)
+        stress_probas = stress_model.predict_proba(feats)
+        crop_preds = [crop_hint] * len(records) if crop_hint else list(crop_model.predict(feats))
+    except Exception as e:
+        return jsonify({"error": f"Trend computation failed: {e}"}), 500
+
+    series = []
+    stress_counts, urgency_counts = {}, {}
+    for i, rec in enumerate(records):
+        stress = str(stress_preds[i])
+        advisory = compute_advisory(rec, stress)
+        stress_counts[stress] = stress_counts.get(stress, 0) + 1
+        urgency_counts[advisory["urgency"]] = urgency_counts.get(advisory["urgency"], 0) + 1
+        series.append({
+            "date": rec["date"],
+            "crop": rec["crop"],
+            "predicted_crop": str(crop_preds[i]),
+            "growth_stage": rec["growth_stage"],
+            "growth_fraction": rec["growth_fraction"],
+            "NDVI": rec["optical"]["NDVI"],
+            "NDWI": rec["optical"]["NDWI"],
+            "MSI": rec["optical"]["MSI"],
+            "VV_dB": rec["sar"]["VV_dB"],
+            "VH_dB": rec["sar"]["VH_dB"],
+            "VV_VH_ratio": rec["sar"]["VV_VH_ratio"],
+            "moisture_deficit_pct": rec["simulated_deficit_pct"],
+            "predicted_stress": stress,
+            "stress_confidence": round(float(max(stress_probas[i])), 3),
+            "urgency": advisory["urgency"],
+            "recommended_water_mm": advisory["recommended_water_mm"],
+            "crop_water_demand_mm_day": advisory["crop_water_demand_mm_day"],
+        })
+
+    ndvis = [p["NDVI"] for p in series]
+    ndvi_change = round(series[-1]["NDVI"] - series[0]["NDVI"], 3)
+    if ndvi_change > 0.05:
+        trend = "improving"
+    elif ndvi_change < -0.05:
+        trend = "declining"
+    else:
+        trend = "stable"
+
+    return jsonify({
+        "field": {"lat": lat, "lon": lon, "crop_hint": crop_hint},
+        "range": {
+            "days": days,
+            "step_days": step,
+            "points": len(series),
+            "from": series[0]["date"],
+            "to": series[-1]["date"],
+        },
+        "series": series,
+        "summary": {
+            "avg_ndvi": round(sum(ndvis) / len(ndvis), 3),
+            "min_ndvi": min(ndvis),
+            "max_ndvi": max(ndvis),
+            "avg_ndwi": round(sum(p["NDWI"] for p in series) / len(series), 3),
+            "avg_msi": round(sum(p["MSI"] for p in series) / len(series), 3),
+            "total_recommended_water_mm": round(sum(p["recommended_water_mm"] for p in series), 1),
+            "ndvi_change": ndvi_change,
+            "trend": trend,
+            "stress_distribution": stress_counts,
+            "urgency_distribution": urgency_counts,
+            "latest": series[-1],
+        },
+        "source": records[-1]["source"],
+    })
 
 
 @app.route("/api/history")

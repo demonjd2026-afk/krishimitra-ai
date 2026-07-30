@@ -2243,3 +2243,182 @@ html.theme-transition *::after {
     padding: 11px 10px;
   }
 }
+
+/* =====================================================================
+   ANALYTICS  (Interactive Chart.js charts)
+   A wider card than the other views: the charts sit in a responsive grid
+   that collapses to a single column on tablets/phones. All colours come
+   from the shared theme tokens, so light/dark work without extra rules.
+   ===================================================================== */
+.analytics-card {
+  max-width: 1180px;
+}
+
+.analytics-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 18px 0 6px;
+}
+
+.analytics-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 1 150px;
+  min-width: 130px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.analytics-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  margin: 18px 0 4px;
+}
+
+.analytics-summary:empty {
+  display: none;
+}
+
+.an-stat {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.an-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.an-value {
+  font-size: 16px;
+  font-weight: 700;
+  font-family: 'Sora', sans-serif;
+}
+
+.analytics-status {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.analytics-status.is-error {
+  color: var(--red);
+}
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+  transition: opacity .2s ease;
+}
+
+.chart-grid.is-loading {
+  opacity: .45;
+  pointer-events: none;
+}
+
+.chart-grid.is-hidden {
+  display: none;
+}
+
+.chart-card {
+  margin: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px 14px;
+  animation: fadeSlideIn .3s ease;
+}
+
+.chart-card-wide {
+  grid-column: 1 / -1;
+}
+
+.chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.chart-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chart-dl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  min-height: auto;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+
+.chart-dl:hover {
+  color: var(--green);
+  border-color: var(--line-strong);
+}
+
+/* Fixed-height box: Chart.js is responsive with maintainAspectRatio:false,
+   so the canvas fills this box instead of growing unbounded. */
+.chart-box {
+  position: relative;
+  height: 260px;
+}
+
+.chart-card-wide .chart-box {
+  height: 300px;
+}
+
+.chart-source {
+  margin-top: 14px;
+  font-size: 11.5px;
+}
+
+@media (max-width: 767px) {
+  .chart-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .analytics-form label {
+    flex: 1 1 100%;
+  }
+
+  .chart-box,
+  .chart-card-wide .chart-box {
+    height: 230px;
+  }
+}
+
+@media (max-width: 480px) {
+  .analytics-summary {
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  }
+
+  .an-value {
+    font-size: 14px;
+  }
+}

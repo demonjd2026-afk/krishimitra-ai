@@ -576,6 +576,9 @@ function showView(view) {
   document.getElementById("view-weather").style.display =
     view === "weather" ? "block" : "none";
 
+  document.getElementById("view-analytics").style.display =
+    view === "analytics" ? "block" : "none";
+
   document.querySelectorAll(".nav-pill").forEach(btn => {
     btn.classList.remove("active");
     btn.setAttribute("aria-selected", "false");
@@ -600,6 +603,10 @@ function showView(view) {
     loadForecastOnce();
   }
 
+  if (view === "analytics") {
+    loadAnalyticsOnce();
+  }
+
   if (map) {
     setTimeout(() => {
       map.invalidateSize();
@@ -612,6 +619,7 @@ document.getElementById("tab-analyze").addEventListener("click", () => showView(
 document.getElementById("tab-pipeline").addEventListener("click", () => showView("pipeline"));
 document.getElementById("tab-contributors").addEventListener("click", () => showView("contributors"));
 document.getElementById("tab-weather").addEventListener("click", () => showView("weather"));
+document.getElementById("tab-analytics").addEventListener("click", () => showView("analytics"));
 
 // ---- 7-Day Weather Forecast (GET /api/forecast, powered by Open-Meteo) ----
 let forecastInitDone = false;
@@ -1443,11 +1451,16 @@ function applyTheme(theme, persist) {
   // the mobile sidebar slide, card animations, etc.).
   root.classList.add('theme-transition');
   root.setAttribute('data-theme', theme);
+  // Keep the declared colour-scheme in step (see the pre-paint script in
+  // index.html) so the browser never auto-darkens the page behind our back.
+  root.style.colorScheme = theme === 'light' ? 'light dark' : 'dark light';
   if (persist) {
     try { localStorage.setItem('km-theme', theme); } catch (e) { /* storage blocked */ }
   }
   updateThemeToggleUI(theme);
   syncMapBaseToTheme(theme);
+  // Canvas charts can't inherit the new CSS variables — repaint them.
+  if (typeof repaintCharts === 'function') repaintCharts();
   window.setTimeout(() => root.classList.remove('theme-transition'), 300);
 }
 
@@ -1769,6 +1782,447 @@ function setupLocationSearch() {
   renderHistory();
 }
 
+/* ================= ANALYTICS (Interactive Charts) =================
+   Chart.js visualisations for the vegetation indices, SAR backscatter and
+   irrigation demand of a single field over time (GET /api/trend), plus a
+   cross-field NDVI comparison built from the dashboard data already in memory.
+   Purely additive: every other view keeps working if Chart.js (CDN) or the
+   trend endpoint is unavailable — the charts area just shows a message. */
+const ANALYTICS_CHART_IDS = {
+  ndvi: 'chartNdvi',
+  ndwi: 'chartNdwi',
+  msi: 'chartMsi',
+  sar: 'chartSar',
+  irrigation: 'chartIrrigation',
+  health: 'chartHealth',
+  compare: 'chartCompare',
+};
+
+const charts = {};          // key -> Chart instance
+let analyticsTrend = null;  // last /api/trend payload (re-rendered on theme change)
+let analyticsInitDone = false;
+let analyticsLoading = false;
+
+function chartsAvailable() {
+  return typeof Chart !== 'undefined';
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+/* Chart colours come from the same CSS custom properties as the rest of the
+   UI, so both themes are handled without a second palette. */
+function chartPalette() {
+  const css = getComputedStyle(document.documentElement);
+  const v = (name, fallback) => ((css.getPropertyValue(name) || '').trim() || fallback);
+  const light = currentTheme() === 'light';
+  return {
+    green: v('--green', '#35c37b'),
+    amber: v('--amber', '#e0a530'),
+    orange: v('--orange', '#ff7a1a'),
+    red: v('--red', '#e0483d'),
+    blue: v('--blue', '#2f8fe0'),
+    text: v('--text', '#eaf3ee'),
+    muted: v('--muted', '#85a596'),
+    grid: light ? 'rgba(20, 83, 55, 0.12)' : 'rgba(53, 195, 123, 0.12)',
+    tooltipBg: light ? 'rgba(255,255,255,0.96)' : 'rgba(8, 24, 17, 0.95)',
+  };
+}
+
+function withAlpha(color, alpha) {
+  const hex = String(color).trim();
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  let h = m[1];
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const int = parseInt(h, 16);
+  return `rgba(${(int >> 16) & 255}, ${(int >> 8) & 255}, ${int & 255}, ${alpha})`;
+}
+
+function chartDateLabel(iso) {
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const d = new Date(iso + 'T00:00:00');
+  return Number.isNaN(d.getTime()) ? iso : `${d.getDate()} ${months[d.getMonth()]}`;
+}
+
+/* Shared axis/tooltip/legend styling so all charts read as one system. */
+function baseChartOptions(p, { yTitle = '', beginAtZero = false, legend = false } = {}) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: prefersReducedMotion() ? false : { duration: 600, easing: 'easeOutQuart' },
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: {
+        display: legend,
+        labels: { color: p.text, boxWidth: 12, boxHeight: 12, usePointStyle: true, font: { family: 'Inter', size: 11 } },
+      },
+      tooltip: {
+        backgroundColor: p.tooltipBg,
+        titleColor: p.text,
+        bodyColor: p.text,
+        borderColor: p.grid,
+        borderWidth: 1,
+        padding: 10,
+        displayColors: true,
+        titleFont: { family: 'Inter', size: 12, weight: '600' },
+        bodyFont: { family: 'Inter', size: 12 },
+      },
+    },
+    scales: {
+      x: {
+        grid: { color: p.grid, drawTicks: false },
+        border: { color: p.grid },
+        ticks: { color: p.muted, maxRotation: 0, autoSkip: true, maxTicksLimit: 7, font: { family: 'Inter', size: 10 } },
+      },
+      y: {
+        beginAtZero,
+        grid: { color: p.grid, drawTicks: false },
+        border: { color: p.grid },
+        ticks: { color: p.muted, font: { family: 'Inter', size: 10 } },
+        title: yTitle ? { display: true, text: yTitle, color: p.muted, font: { family: 'Inter', size: 10 } } : { display: false },
+      },
+    },
+  };
+}
+
+function drawChart(key, config) {
+  if (!chartsAvailable()) return;
+  const canvas = document.getElementById(ANALYTICS_CHART_IDS[key]);
+  if (!canvas) return;
+  if (charts[key]) charts[key].destroy();
+  charts[key] = new Chart(canvas, config);
+}
+
+function lineDataset(label, data, color, { fill = true, dashed = false } = {}) {
+  return {
+    label,
+    data,
+    borderColor: color,
+    backgroundColor: fill ? withAlpha(color, 0.16) : withAlpha(color, 0.6),
+    borderWidth: 2,
+    borderDash: dashed ? [5, 4] : undefined,
+    fill,
+    tension: 0.35,
+    pointRadius: 0,
+    pointHoverRadius: 5,
+    pointBackgroundColor: color,
+    pointHoverBorderColor: '#fff',
+    pointHoverBorderWidth: 2,
+  };
+}
+
+function renderTrendCharts(payload) {
+  if (!chartsAvailable() || !payload || !Array.isArray(payload.series) || !payload.series.length) return;
+  const p = chartPalette();
+  const s = payload.series;
+  const labels = s.map(pt => chartDateLabel(pt.date));
+
+  drawChart('ndvi', {
+    type: 'line',
+    data: { labels, datasets: [lineDataset('NDVI', s.map(pt => pt.NDVI), p.green)] },
+    options: baseChartOptions(p, { yTitle: 'NDVI (0–1)' }),
+  });
+
+  drawChart('ndwi', {
+    type: 'line',
+    data: { labels, datasets: [lineDataset('NDWI', s.map(pt => pt.NDWI), p.blue)] },
+    options: baseChartOptions(p, { yTitle: 'NDWI' }),
+  });
+
+  drawChart('msi', {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'MSI',
+        data: s.map(pt => pt.MSI),
+        // higher MSI = more moisture stress, so the bars warm up as it rises
+        backgroundColor: s.map(pt => withAlpha(pt.MSI >= 1.6 ? p.red : (pt.MSI >= 1.3 ? p.orange : p.amber), 0.75)),
+        borderRadius: 4,
+        borderSkipped: false,
+        maxBarThickness: 26,
+      }],
+    },
+    options: baseChartOptions(p, { yTitle: 'MSI (higher = drier)' }),
+  });
+
+  drawChart('sar', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        lineDataset('VV (dB)', s.map(pt => pt.VV_dB), p.orange, { fill: false }),
+        lineDataset('VH (dB)', s.map(pt => pt.VH_dB), p.blue, { fill: false, dashed: true }),
+      ],
+    },
+    options: baseChartOptions(p, { yTitle: 'Backscatter (dB)', legend: true }),
+  });
+
+  const irrigationOpts = baseChartOptions(p, { yTitle: 'mm', beginAtZero: true, legend: true });
+  drawChart('irrigation', {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Recommended water (mm)',
+          data: s.map(pt => pt.recommended_water_mm),
+          backgroundColor: withAlpha(p.blue, 0.65),
+          borderRadius: 4,
+          borderSkipped: false,
+          maxBarThickness: 26,
+          order: 2,
+        },
+        {
+          type: 'line',
+          label: 'Crop demand (mm/day)',
+          data: s.map(pt => pt.crop_water_demand_mm_day),
+          borderColor: p.amber,
+          backgroundColor: withAlpha(p.amber, 0.15),
+          borderWidth: 2,
+          tension: 0.35,
+          pointRadius: 0,
+          pointHoverRadius: 5,
+          fill: false,
+          order: 1,
+        },
+      ],
+    },
+    options: irrigationOpts,
+  });
+
+  const dist = (payload.summary && payload.summary.stress_distribution) || {};
+  const healthOrder = ['Healthy', 'Mild Stress', 'Moderate Stress', 'Severe Stress'];
+  const healthLabels = healthOrder.filter(k => dist[k]);
+  drawChart('health', {
+    type: 'doughnut',
+    data: {
+      labels: healthLabels,
+      datasets: [{
+        data: healthLabels.map(k => dist[k]),
+        backgroundColor: healthLabels.map(k => withAlpha(stressColor[k] || p.muted, 0.85)),
+        borderColor: withAlpha(p.text, 0.12),
+        borderWidth: 1,
+        hoverOffset: 8,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '58%',
+      animation: prefersReducedMotion() ? false : { duration: 600 },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { color: p.text, boxWidth: 12, boxHeight: 12, usePointStyle: true, font: { family: 'Inter', size: 11 } },
+        },
+        tooltip: {
+          backgroundColor: p.tooltipBg,
+          titleColor: p.text,
+          bodyColor: p.text,
+          borderColor: p.grid,
+          borderWidth: 1,
+          padding: 10,
+          callbacks: {
+            label: (ctx) => {
+              const total = ctx.dataset.data.reduce((a, b) => a + b, 0) || 1;
+              return ` ${ctx.label}: ${ctx.parsed} din (${Math.round((ctx.parsed / total) * 100)}%)`;
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+async function renderComparisonChart() {
+  if (!chartsAvailable()) return;
+  let data = fieldsData;
+  if (!Array.isArray(data) || !data.length) {
+    try {
+      const res = await fetch('/api/fields');
+      data = await res.json();
+    } catch (e) {
+      return;
+    }
+  }
+  const rows = (data || []).filter(d => !d.error);
+  if (!rows.length) return;
+
+  const p = chartPalette();
+  const opts = baseChartOptions(p, { yTitle: '', beginAtZero: true });
+  opts.indexAxis = 'y';
+  opts.interaction = { mode: 'nearest', intersect: true };
+  opts.scales.x.ticks.maxTicksLimit = 6;
+  opts.scales.y.ticks.maxTicksLimit = rows.length;
+  opts.plugins.tooltip.callbacks = {
+    label: (ctx) => {
+      const d = rows[ctx.dataIndex];
+      return ` NDVI ${ctx.parsed.x} · ${d.ai_prediction.predicted_stress} · ${d.advisory.urgency} urgency`;
+    },
+  };
+
+  drawChart('compare', {
+    type: 'bar',
+    data: {
+      labels: rows.map(d => `${d.field.name || d.field.id} (${d.field.district || '—'})`),
+      datasets: [{
+        label: 'NDVI',
+        data: rows.map(d => d.satellite_features.optical.NDVI),
+        backgroundColor: rows.map(d => withAlpha(ndviColor(d.satellite_features.optical.NDVI), 0.8)),
+        borderRadius: 4,
+        borderSkipped: false,
+        maxBarThickness: 22,
+      }],
+    },
+    options: opts,
+  });
+}
+
+function renderAnalyticsSummary(payload) {
+  const el = document.getElementById('analyticsSummary');
+  if (!el) return;
+  const sm = payload.summary || {};
+  const latest = sm.latest || {};
+  const trendIcon = { improving: '📈', declining: '📉', stable: '➖' }[sm.trend] || '➖';
+  el.innerHTML = `
+    <div class="an-stat"><span class="an-label">Avg NDVI</span><span class="an-value">${sm.avg_ndvi ?? '—'}</span></div>
+    <div class="an-stat"><span class="an-label">NDVI Change</span><span class="an-value">${trendIcon} ${sm.ndvi_change > 0 ? '+' : ''}${sm.ndvi_change ?? '—'}</span></div>
+    <div class="an-stat"><span class="an-label">Avg NDWI</span><span class="an-value">${sm.avg_ndwi ?? '—'}</span></div>
+    <div class="an-stat"><span class="an-label">Avg MSI</span><span class="an-value">${sm.avg_msi ?? '—'}</span></div>
+    <div class="an-stat"><span class="an-label">Water (window)</span><span class="an-value">${sm.total_recommended_water_mm ?? '—'} mm</span></div>
+    <div class="an-stat"><span class="an-label">Latest Stress</span><span class="an-value" style="color:${stressColor[latest.predicted_stress] || 'inherit'}">${escapeHtml(latest.predicted_stress || '—')}</span></div>
+  `;
+  const src = document.getElementById('analyticsSource');
+  if (src) {
+    src.textContent = `${payload.range.points} points · ${payload.range.from} → ${payload.range.to}` +
+      (payload.range.step_days > 1 ? ` (every ${payload.range.step_days} days)` : '') +
+      ` · Source: ${payload.source || ''}`;
+  }
+}
+
+function setAnalyticsStatus(message, isError) {
+  const el = document.getElementById('analyticsStatus');
+  if (!el) return;
+  if (!message) {
+    el.hidden = true;
+    el.textContent = '';
+    el.classList.remove('is-error');
+    return;
+  }
+  el.hidden = false;
+  el.textContent = message;
+  el.classList.toggle('is-error', !!isError);
+}
+
+async function loadAnalytics() {
+  const grid = document.getElementById('chartGrid');
+  if (!chartsAvailable()) {
+    setAnalyticsStatus('Charts library load nahi ho payi (internet / CDN check karein). Baaki dashboard normal chal raha hai.', true);
+    if (grid) grid.classList.add('is-hidden');
+    return;
+  }
+  if (analyticsLoading) return;
+
+  const lat = parseFloat(document.getElementById('anLat').value);
+  const lon = parseFloat(document.getElementById('anLon').value);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    setAnalyticsStatus('Sahi latitude aur longitude daalein.', true);
+    return;
+  }
+  const days = document.getElementById('anRange').value;
+  const crop = document.getElementById('anCrop').value;
+
+  analyticsLoading = true;
+  if (grid) grid.classList.add('is-loading');
+  setAnalyticsStatus('Trend data load ho raha hai…', false);
+
+  try {
+    const url = `/api/trend?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}` +
+      `&days=${encodeURIComponent(days)}${crop ? `&crop=${encodeURIComponent(crop)}` : ''}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `Server error ${res.status}`);
+
+    analyticsTrend = data;
+    renderAnalyticsSummary(data);
+    renderTrendCharts(data);
+    await renderComparisonChart();
+    setAnalyticsStatus('', false);
+  } catch (err) {
+    setAnalyticsStatus(`Analytics load nahi ho payi (${err.message}). Thodi der baad dobara koshish karein.`, true);
+  } finally {
+    analyticsLoading = false;
+    if (grid) grid.classList.remove('is-loading');
+  }
+}
+
+function loadAnalyticsOnce() {
+  if (analyticsInitDone) return;
+  analyticsInitDone = true;
+  loadAnalytics();
+}
+
+/* Charts are canvas-drawn, so their colours don't follow CSS variables on a
+   theme switch — repaint them from the cached payload instead. */
+function repaintCharts() {
+  if (!analyticsTrend || !chartsAvailable()) return;
+  renderTrendCharts(analyticsTrend);
+  renderComparisonChart();
+}
+
+function setupAnalytics() {
+  const form = document.getElementById('analyticsForm');
+  if (!form) return;
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    loadAnalytics();
+  });
+
+  const useFieldBtn = document.getElementById('anUseFieldBtn');
+  if (useFieldBtn) {
+    useFieldBtn.addEventListener('click', () => {
+      if (!currentField || !currentField.field) {
+        setAnalyticsStatus('Pehle Field Map se koi field select karein.', true);
+        return;
+      }
+      document.getElementById('anLat').value = currentField.field.lat.toFixed(4);
+      document.getElementById('anLon').value = currentField.field.lon.toFixed(4);
+      const cropSel = document.getElementById('anCrop');
+      const crop = currentField.satellite_features && currentField.satellite_features.crop;
+      cropSel.value = [...cropSel.options].some(o => o.value === crop) ? crop : '';
+      loadAnalytics();
+    });
+  }
+
+  // Re-run on range/crop change so the charts feel live without hitting submit.
+  ['anRange', 'anCrop'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', () => loadAnalytics());
+  });
+
+  // Download any chart as a PNG image.
+  document.querySelectorAll('.chart-dl[data-chart]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.chart;
+      const chart = charts[key];
+      if (!chart) {
+        setAnalyticsStatus('Chart abhi ready nahi hai — pehle data load hone dein.', true);
+        return;
+      }
+      const a = document.createElement('a');
+      a.href = chart.toBase64Image('image/png', 1);
+      a.download = `krishimitra-${key}-chart.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    });
+  });
+}
+
 /* ================= INIT ================= */
 document.addEventListener("DOMContentLoaded", () => {
   showView("map");
@@ -1782,6 +2236,8 @@ document.addEventListener("DOMContentLoaded", () => {
   setupFieldSearchFilter();
 
   setupLocationSearch();
+
+  setupAnalytics();
 
   goToStep(1);
 
